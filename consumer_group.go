@@ -529,6 +529,12 @@ type ConsumerGroupSession interface {
 	// MarkMessage marks a message as consumed.
 	MarkMessage(msg *ConsumerMessage, metadata string)
 
+	// CommitOffset commits message and wait result
+	//
+	// Note: this method should be used only when you need to be sure
+	// that offset was commited successfully
+	CommitOffset(topic string, partition int32, offset int64, metadata string) error
+
 	// Context returns the session context.
 	Context() context.Context
 }
@@ -640,6 +646,10 @@ func (s *consumerGroupSession) MarkMessage(msg *ConsumerMessage, metadata string
 	s.MarkOffset(msg.Topic, msg.Partition, msg.Offset+1, metadata)
 }
 
+func (s *consumerGroupSession) CommitOffset(topic string, partition int32, offset int64, metadata string) error {
+	return s.offsets.commitOffset(topic, partition, offset, metadata)
+}
+
 func (s *consumerGroupSession) Context() context.Context {
 	return s.ctx
 }
@@ -656,12 +666,13 @@ func (s *consumerGroupSession) consume(topic string, partition int32) {
 
 	// get next offset
 	offset := s.parent.config.Consumer.Offsets.Initial
+	metadata := ""
 	if pom := s.offsets.findPOM(topic, partition); pom != nil {
-		offset, _ = pom.NextOffset()
+		offset, metadata = pom.NextOffset()
 	}
 
 	// create new claim
-	claim, err := newConsumerGroupClaim(s, topic, partition, offset)
+	claim, err := newConsumerGroupClaim(s, topic, partition, offset, metadata)
 	if err != nil {
 		s.parent.handleError(err, topic, partition)
 		return
@@ -811,6 +822,9 @@ type ConsumerGroupClaim interface {
 	// InitialOffset returns the initial offset that was used as a starting point for this claim.
 	InitialOffset() int64
 
+	// InitialOffset returns the last commited metadata.
+	InitialMetadata() string
+
 	// HighWaterMarkOffset returns the high water mark offset of the partition,
 	// i.e. the offset that will be used for the next message that will be produced.
 	// You can use this to determine how far behind the processing is.
@@ -828,13 +842,15 @@ type consumerGroupClaim struct {
 	topic     string
 	partition int32
 	offset    int64
+	metadata  string
 	PartitionConsumer
 }
 
-func newConsumerGroupClaim(sess *consumerGroupSession, topic string, partition int32, offset int64) (*consumerGroupClaim, error) {
+func newConsumerGroupClaim(sess *consumerGroupSession, topic string, partition int32, offset int64, metadata string) (*consumerGroupClaim, error) {
 	pcm, err := sess.parent.consumer.ConsumePartition(topic, partition, offset)
 	if err == ErrOffsetOutOfRange {
 		offset = sess.parent.config.Consumer.Offsets.Initial
+		metadata = ""
 		pcm, err = sess.parent.consumer.ConsumePartition(topic, partition, offset)
 	}
 	if err != nil {
@@ -851,13 +867,15 @@ func newConsumerGroupClaim(sess *consumerGroupSession, topic string, partition i
 		topic:             topic,
 		partition:         partition,
 		offset:            offset,
+		metadata:          metadata,
 		PartitionConsumer: pcm,
 	}, nil
 }
 
-func (c *consumerGroupClaim) Topic() string        { return c.topic }
-func (c *consumerGroupClaim) Partition() int32     { return c.partition }
-func (c *consumerGroupClaim) InitialOffset() int64 { return c.offset }
+func (c *consumerGroupClaim) Topic() string           { return c.topic }
+func (c *consumerGroupClaim) Partition() int32        { return c.partition }
+func (c *consumerGroupClaim) InitialOffset() int64    { return c.offset }
+func (c *consumerGroupClaim) InitialMetadata() string { return c.metadata }
 
 // Drains messages and errors, ensures the claim is fully closed.
 func (c *consumerGroupClaim) waitClosed() (errs ConsumerErrors) {

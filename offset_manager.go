@@ -1,6 +1,7 @@
 package sarama
 
 import (
+	"errors"
 	"sync"
 	"time"
 )
@@ -104,11 +105,13 @@ func (om *offsetManager) Close() error {
 		// mark all POMs as closed
 		om.asyncClosePOMs()
 
-		// flush one last time
-		for attempt := 0; attempt <= om.conf.Consumer.Offsets.Retry.Max; attempt++ {
-			om.flushToBroker()
-			if om.releasePOMs(false) == 0 {
-				break
+		if om.conf.Consumer.Offsets.AutoCommit.Enable {
+			// flush one last time
+			for attempt := 0; attempt <= om.conf.Consumer.Offsets.Retry.Max; attempt++ {
+				om.flushToBroker()
+				if om.releasePOMs(false) == 0 {
+					break
+				}
 			}
 		}
 
@@ -225,7 +228,9 @@ func (om *offsetManager) mainLoop() {
 	for {
 		select {
 		case <-om.ticker.C:
-			om.flushToBroker()
+			if om.conf.Consumer.Offsets.AutoCommit.Enable {
+				om.flushToBroker()
+			}
 			om.releasePOMs(false)
 		case <-om.closing:
 			return
@@ -235,10 +240,6 @@ func (om *offsetManager) mainLoop() {
 
 // flushToBroker is ignored if auto-commit offsets is disabled
 func (om *offsetManager) flushToBroker() {
-	if !om.conf.Consumer.Offsets.AutoCommit.Enable {
-		return
-	}
-
 	req := om.constructRequest()
 	if req == nil {
 		return
@@ -362,6 +363,28 @@ func (om *offsetManager) handleError(err error) {
 			pom.handleError(err)
 		}
 	}
+}
+
+// Commit offset for topic/partition in sync mode
+func (om *offsetManager) commitOffset(topic string, partition int32, offset int64, metadata string) error {
+	pom := om.findPOM(topic, partition)
+	if pom != nil {
+		pom.MarkOffset(offset, metadata)
+	} else {
+		return ConfigurationError("topic/partition is not managed by offset manager")
+	}
+
+	om.flushToBroker()
+
+	pom.lock.Lock()
+	defer pom.lock.Unlock()
+
+	if pom.dirty == true {
+		// detailed error should be read from error channel
+		return errors.New("offset is not committed")
+	}
+
+	return nil
 }
 
 func (om *offsetManager) asyncClosePOMs() {
