@@ -12,8 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"fmt"
-
+	
 	metrics "github.com/rcrowley/go-metrics"
 )
 
