@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"fmt"
 
 	metrics "github.com/rcrowley/go-metrics"
 )
@@ -370,6 +371,7 @@ func (b *Broker) Fetch(request *FetchRequest) (*FetchResponse, error) {
 func (b *Broker) CommitOffset(request *OffsetCommitRequest) (*OffsetCommitResponse, error) {
 	response := new(OffsetCommitResponse)
 
+	fmt.Printf("DEBUG: COMMIT %+v\n", request)
 	err := b.sendAndReceive(request, response)
 	if err != nil {
 		return nil, err
